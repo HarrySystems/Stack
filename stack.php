@@ -1,332 +1,223 @@
 <?php
-	ob_start();
+	Abstract Class Stack
+	{
+		Public Static $_LOGS = "";
+		Public Static $_ERROR = "";
+		Public Static $_WARN = "";
+		Public Static $_INFO = "";
+		Public Static $_DEBUG = true;
 
-	$_msg = array();
-	$_RECORD = array();
-	$_DEBUG = true;
-
-	// Inicia exibição de todos os erros
-		error_reporting(E_ALL);
-		ini_set("display_errors", true);
-		ini_set("html_errors", false);
-
-	// ERRORS/WARNINGS
-		$_WARNINGS = array();
-		$_ERRORS = array();
-	
-		function errorHandler(
-			$errno, 
-			$errstr, 
-			$errfile, 
+		Public Static Function error(
+			$errno,
+			$errstr,
+			$errfile,
 			$errline
 		)
 		{
-			Global $_WARNINGS;
-			Global $_ERRORS;
-
-			if ( !error_reporting () ) {
-		        // Error reporting is currently turned off or suppressed with @
-		        return;
-		    }
-
-			$arrErrorInfo = array	(
-				"id" => $errno, 
-				"message" => $errstr, 
-				"file" => $errfile, 
+			$error = array(
+				"id" => $errno,
+				"message" => $errstr,
+				"file" => $errfile,
 				"line" => $errline
 			);
-			
-			switch($errno){
+
+			switch($errno)
+			{
+				case E_NOTICE:
 				case E_WARNING:
 				case E_USER_WARNING:
-				case E_NOTICE:
-				case E_USER_ERROR:
-					$_WARNINGS[] = $arrErrorInfo;
+					self::$_WARN[] = $error;
 				break;
-				
+
+				case E_USER_NOTICE:
+					self::$_INFO[] = $error;
+				break;
+
 				default:
-					$_ERRORS[] = $arrErrorInfo;
-				break;
+					if(!empty($errstr))
+						self::$_ERROR[] = $error;
 			}
-			
-			return true;
 		}
-		
-		set_error_handler("errorHandler");
-	
-	// FATAL ERRROS
-		function shutdownHandler(){
-			Global $_ERRORS;
-			$lasterror = error_get_last();
-			
-			$_ERRORS[] = array(
-				"id" => $lasterror['type'], 
-				"message" => $lasterror['message'], 
-				"file" => $lasterror['file'], 
-				"line" => $lasterror['line']
+
+		Public Static Function fatal($exception)
+		{
+			if(empty($exception)) return false;
+
+			self::$_ERROR[] =
+			$error = (
+					is_array($exception)
+				?	array(
+						"id" => 0,
+						"message" => $exception['message'],
+						"file" => $exception['file'],
+						"line" => $exception['line'],
+						"type" => "FATAL"
+					)
+				:	array(
+						"id" => 0,
+						"message" => $exception->getMessage(),
+						"file" => $exception->getFile(),
+						"line" => $exception->getLine(),
+						"type" => "EXCEPTION"
+					)
 			);
-			
-			// Solução provisória
-				if(!empty($lasterror)){
-					ob_end_clean();
 
-					header("Content-Type: text/html");
-					echo "FATAL ERROR: ".$lasterror['message']."  <br>LINE: ".$lasterror['line']."<br>FILE:".$lasterror['file'];
-				}
-				else
-				{
-				}
-					sendToConsole();
-		}
-
-		register_shutdown_function("shutdownHandler");
-
-	// EXCEPTIONS
-		function exceptionHandler($exception) {
 			ob_end_clean();
-			echo "EXCEPTION: ".$exception->getMessage()." <br>LINE: ".$exception->getLine()."<br> FILE: ".$exception->getFile();
+			echo 	$error['type'].": ".$error['message']." <br>".
+					"LINE: ".$error['line']."<br>".
+					"FILE: ".$error['file']."<br>".
+					"BACKTRACE:<pre>".print_r(debug_backtrace(), true)."</pre>";
 		}
 
-		set_exception_handler('exceptionHandler');
-
-	// MESSAGES
-		function stack(
-			$message, 
-			$name = ''
-		)
+		Public Static Function shutdown()
 		{
-			if(!empty($name))
-				$GLOBALS['_msg'][$name] = $message;
-			else
-				$GLOBALS['_msg'][] = $message;
+			self::fatal(error_get_last());
+
+			echo "
+				<script id='_stack'>
+					if (!window.console)
+						throw new Error('This browser does not support console!');
+
+					// history.replaceState({}, '', '/');
+					// history.replaceState({}, '', window.location.href);
+			";
+
+			// SERVER
+				$table_server = "";
+				foreach ($_SERVER as $key => $value)
+					$table_server .= "'".$key."':{'value': '".self::fix($value)."'},";
+				echo "
+					if(window.self === window.top)
+					{
+						console.groupCollapsed('SERVER');
+						console.table({".rtrim($table_server, ",")."});
+						console.groupEnd();
+					}
+				";
+
+			// PAGE
+				echo "
+					console.group('"
+					.rtrim(basename($_SERVER['PHP_SELF']), ".php")
+					." ".round((microtime(true) - $_SERVER['REQUEST_TIME']), 2)."s"
+					." ".self::convertMemory(memory_get_usage(true))
+					."');
+				";
+
+				// REQUEST
+					if(!isset($_SESSION)) session_start();
+					$request = array(
+						"GET" => $GLOBALS["_GET"],
+						"POST" => $GLOBALS["_POST"],
+						"SESSION" => $GLOBALS["_SESSION"],
+						"LOGS" => self::$_LOGS//array_merge($GLOBALS['_LOGS'], self::$_LOGS)
+					);
+					echo "console.groupCollapsed('REQUEST');";
+					foreach($request as $request_key => $request_value)
+					{
+						if(!empty($request_value))
+						{
+							echo "
+								console.groupCollapsed('".$request_key."');
+								console.log(".json_encode($request_value)." );
+								console.groupEnd();
+							";
+						}
+					}
+					echo "console.groupEnd();";
+
+				// ERRORS
+					$error_types = array(
+						"WARNINGS" => "WARN",
+						"ERRORS" => "ERROR",
+						"INFO" => "INFO",
+					);
+					foreach($error_types as $error_key => $error_type)
+					{
+						if(!is_array(self::${"_".$error_type}))
+							continue;
+
+						self::${"_".$error_type} = array_unique(
+							@(array)self::${"_".$error_type},
+							SORT_REGULAR
+						);
+						echo "console.group".($error_key == "WARNINGS" ? "Collapsed" : "")."('".$error_key." (".count(self::${"_".$error_type}).")');";
+						foreach (self::${"_".$error_type} as $key => $value)
+							echo 	"console.".strtolower($error_type)
+									."('FILE:\\t".self::fix($value['file'])
+									."\\nLINE:\\t".$value['line']
+									."\\nMSG:\\t".self::fix($value['message'])."');";
+						echo "console.groupEnd();";
+					}
+
+			echo "
+					console.groupEnd();
+				</script>
+			";
+
+			ob_flush(); flush();
 		}
 
-		function fixMessage($message)
+		Public Static Function run()
 		{
-			if(!is_array($message))
-			{
-				$message = str_replace("'", "`", $message);
-				$message = str_replace("\\", "/", $message);
-				$message = str_replace("\n", "\\n", $message);
-				$message = str_replace("\r", "\\r", $message);
-			}
+			ini_set("display_errors", true);
+			ini_set("html_errors", false);
+			error_reporting(E_ALL);
 
-			return $message;
-
-		}
-
-
-	// SEND INFO TO CONSOLE
-		function sendToConsole()
-		{
-			Global $_DEBUG;
-			Global $_WARNINGS;
-			Global $_ERRORS;
-			Global $_msg;
-			Global $_RECORD;
+			set_error_handler("Stack::error");
+			set_exception_handler('Stack::fatal');
 
 			if 	(
-						empty($_SERVER['HTTP_X_REQUESTED_WITH'])
-					||	(
-								!empty($_SERVER['HTTP_X_REQUESTED_WITH'])
-							&&	strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) != 'xmlhttprequest'
-						)
-				) 
-			{
-				$_DEBUG = true;
-			}
-			else
-			{
-				$_DEBUG = false;
-			}
-
-			if($_DEBUG)
+						!isset($_SERVER['HTTP_X_REQUESTED_WITH'])// xmlhttprequest
+					&& 	self::$_DEBUG
+				)
 			{
 				header("Content-Type: text/html");
+				ob_start();
+				register_shutdown_function("Stack::shutdown");
+			}
+		}
 
-				// CONSOLE
-					echo "
-						<script id='_stack'>
-							if (window.console)
-							{
-					";
+		Public Static Function log(
+			$value,
+			$key = ""
+		)
+		{
+			if(empty($key))
+				self::$_LOGS[] = $value;
+			else
+				self::$_LOGS[$key] = $value;
 
-					// BASE
-						$_PAGENAME = substr($_SERVER['PHP_SELF'], strrpos($_SERVER['PHP_SELF'],"/") + 1, strlen($_SERVER['PHP_SELF']));
-						$_MEMUSAGE = @round($size/pow(1024*8,($i=floor(log(memory_get_usage(true),1024*8)))),2).' '.array('B','KB','MB','GB','TB','PB')[$i];
-						$_REQTIME = round((microtime(true) - $_SERVER['REQUEST_TIME']), 2);
-					
-						// Inicia a session, caso ainda não tenha sido iniciada na página
-							@session_start();
+			return $value;
+		}
 
-						// Desconsidera repetição de erros e warnings
-							$_WARNINGS = array_unique($_WARNINGS, SORT_REGULAR);						
-							$_ERRORS = array_unique($_ERRORS, SORT_REGULAR);
-
-					// CONSOLE
-						// SERVER
-							$table_server = "";
-							foreach ($_SERVER as $key => $value)
-								$table_server .= "'".$key."':{'value': '".str_replace("\\","\\\\", str_replace("\n", "\\n", str_replace("\r","", $value)))."'},";
-							
-							echo 	"
-										if(window.self === window.top)
-										{
-											var table_server = {".rtrim($table_server, ",")."};
-											console.groupCollapsed('SERVER')
-											console.table(table_server);
-											console.groupEnd();
-
-											/*var storageHandler = function () {
-											    alert('storage event 1');
-											};
-
-											window.addEventListener('storage', storageHandler, false);*/
-										}
-									";
-						// PAGE
-							echo 	"console.group('".basename($_SERVER['PHP_SELF'])."');";
-
-							// INFO
-								// MEMORY USAGE
-									echo "console.info('Memory usage: ".$_MEMUSAGE."');";
-
-								// REQUEST START
-									echo 	"console.info('Request start: ".
-											date(
-												"Y-m-d H:i:s",
-												$_SERVER['REQUEST_TIME']
-											).
-											"');";
-
-								// REQUEST FINISH
-									echo 	"console.info('Request finish: ".
-											date(
-												"Y-m-d H:i:s",
-												$_SERVER['REQUEST_TIME'] + $_REQTIME
-											).
-											"');";
-
-								// REQUEST TIME
-									echo "console.info('Request time: ".$_REQTIME."');";
-								
-								// REQUEST
-									if 	(
-												count($_GET) > 0
-											||	count($_POST) > 0
-											||	count($_SESSION) > 0
-										)
-									{
-										// GET
-											if(count($_GET) > 0)
-											{
-												echo "
-													console.groupCollapsed('GET');
-													console.dir(".json_encode($_GET)." );
-													console.groupEnd();
-												";
-											}
-
-										// POST
-											if(count($_POST) > 0)
-											{
-												echo "
-													console.groupCollapsed('POST');
-													console.dir(".json_encode($_POST)." );
-													console.groupEnd();
-												";
-											}
-											
-
-										// SESSION
-											if(count($_SESSION) > 0)
-											{
-												echo "
-													console.groupCollapsed('SESSION');
-													console.dir(".json_encode($_SESSION)." );
-													console.groupEnd();
-												";
-											}
-									}
-
-							// MESSAGES
-								if (count($_msg) > 0)
-								{
-									echo "console.groupCollapsed('MESSAGES');";
-									foreach ($_msg as $key => $value) 
-										echo "
-											console.groupCollapsed('".$key."')
-											console.".
-												(
-														is_array($value) 
-													// ? 	"dir" 
-													?	"dir"
-													: 	"log" 
-												)
-												."(\"".
-												str_replace(
-													"\n", 
-													"\\n", 
-													str_replace(
-														"\r",
-														"", 
-														$value
-													)
-												)
-												."\");
-											console.groupEnd();
-										";
-									echo "console.groupEnd();";
-								}
-
-							// RECORDS
-								if (count($_RECORD) > 0)
-								{
-									echo "console.groupCollapsed('RECORDS');";
-									foreach ($_RECORD as $key => $value) 
-										echo "
-											console.groupCollapsed('".$key."')
-											console.log".
-												"(\"".
-												str_replace(
-													"\n", 
-													"\\n", 
-													str_replace(
-														"\r",
-														"", 
-														$value
-													)
-												)
-												."\");
-											console.groupEnd();
-										";
-									echo "console.groupEnd();";
-								}
-
-							// WARNINGS	
-								foreach ($_WARNINGS as $key => $value)
-									echo "console.warn('Line ".$value['line'].": ".fixMessage($value['message'])."');";
-							
-							// ERRORS
-								foreach ($_ERRORS as $key => $value)
-									if(!empty($value['message']))
-										echo "console.error('Line ".$value['line'].": ".fixMessage($value['message'])."');";
-								
-							echo 	"
-									console.groupEnd();
-							";
-					echo "
-							}
-
-							function remove(id) {
-							    return (elem=document.getElementById(id)).parentNode.removeChild(elem);
-							}
-
-							remove('_stack');
-						</script>
-					";
+		// helper functions
+			Private Static Function fix($message)
+			{
+				return 		!is_array($message)
+						?	str_replace(
+								array(
+									"'",
+									"\\",
+									"\n",
+									"\r",
+								),
+								array(
+									"`",
+									"/",
+									"\\n",
+									"\\r",
+								),
+								$message
+							)
+						:	$message;
 			}
 
-			flush();
-			ob_flush();
-		}
+			Private Static Function convertMemory($size)
+			{
+				$unit = array('B','KB','MB','GB','TB','PB');
+				return @round($size/pow(1024*8,($i=floor(log($size,1024*8)))),2).' '.$unit[$i];
+			}
+	}
+
+	Stack::run();
